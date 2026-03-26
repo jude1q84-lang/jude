@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>馬場バイアス判定アプリ</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        .status-red { background-color: #fee2e2; color: #dc2626; font-weight: bold; border: 2px solid #dc2626 !important; }
+        .status-blue { background-color: #dbeafe; color: #2563eb; font-weight: bold; border: 2px solid #2563eb !important; }
+        .status-yellow { background-color: #fef9c3; color: #ca8a04; font-weight: bold; border: 2px solid #ca8a04 !important; }
+        .status-default { background-color: white; color: #374151; border: 1px solid #d1d5db; }
+        
+        /* 入力済み（0以外）の場合の強調スタイル */
+        .has-value { border: 2px solid #6366f1; background-color: #f5f3ff; }
+
+        select {
+            appearance: none;
+            -webkit-appearance: none;
+            text-align: center;
+        }
+
+        /* 選択不可な選択肢のスタイル */
+        option:disabled {
+            color: #d1d5db;
+            background-color: #f3f4f6;
+        }
+    </style>
+</head>
+<body class="bg-gray-50 min-h-screen p-4 md:p-8">
+    <div class="max-w-6xl mx-auto bg-white rounded-xl shadow-lg p-6">
+        <h1 class="text-2xl font-bold text-center text-gray-800 mb-6">馬場バイアス判定ツール</h1>
+        
+        <div class="overflow-x-auto">
+            <table class="w-full border-collapse">
+                <thead>
+                    <tr class="bg-gray-100">
+                        <th class="p-3 border text-sm md:text-base">場所・コース</th>
+                        <th class="p-3 border text-sm md:text-base w-20">レース数</th>
+                        <th class="p-3 border text-sm md:text-base">内枠</th>
+                        <th class="p-3 border text-sm md:text-base">外枠</th>
+                        <th class="p-3 border text-sm md:text-base">逃先</th>
+                        <th class="p-3 border text-sm md:text-base">差追</th>
+                    </tr>
+                </thead>
+                <tbody id="bias-table-body">
+                    <!-- JSで6行生成 -->
+                </tbody>
+            </table>
+        </div>
+
+        <div class="mt-8 p-4 bg-blue-50 rounded-lg">
+            <h2 class="text-sm font-bold text-blue-800 mb-2">【判定基準の解説】</h2>
+            <ul class="text-xs text-blue-700 space-y-1">
+                <li>・枠順指数: (回数 ÷ (レース数×2)) × 100</li>
+                <li>・脚質指数: (回数 ÷ (レース数×2)) × 100</li>
+                <li>・色の意味: <span class="text-red-600 font-bold">赤(超抜)</span> > <span class="text-blue-600 font-bold">青(有利)</span> > <span class="text-yellow-600 font-bold">黄(微有利)</span></li>
+                <li>・補足: 対となる項目との差が1以下の場合は色は付きません</li>
+                <li>・入力支援: 選択済みの数値未満は選択できないようになっています（リセットで解除）</li>
+                <li>・自動保存: 入力内容はブラウザに自動保存されます</li>
+            </ul>
+        </div>
+        
+        <div class="mt-4 text-center">
+            <button onclick="resetNumbersOnly()" class="px-6 py-2 bg-gray-500 text-white rounded hover:bg-gray-600 transition">数字をリセット</button>
+        </div>
+    </div>
+
+    <script>
+        const centralVenues = ["札幌", "函館", "福島", "新潟", "東京", "中山", "中京", "京都", "阪神", "小倉"];
+        const localVenues = ["大井", "川崎", "船橋", "浦和", "名古屋"];
+        const courses = ["芝", "ダート"];
+        const rowsCount = 6;
+        const STORAGE_KEY = 'track_bias_data_v2';
+
+        function initTable() {
+            const tbody = document.getElementById('bias-table-body');
+            for (let i = 0; i < rowsCount; i++) {
+                const tr = document.createElement('tr');
+                
+                let courseOptions = '<option value="">未選択</option>';
+                centralVenues.forEach(v => {
+                    courses.forEach(c => {
+                        courseOptions += `<option value="${v}${c}">${v}${c}</option>`;
+                    });
+                });
+                localVenues.forEach(v => {
+                    courseOptions += `<option value="${v}">${v}</option>`;
+                });
+
+                let raceOptions = '<option value="0">0</option>';
+                for(let n=1; n<=12; n++) raceOptions += `<option value="${n}">${n}</option>`;
+
+                tr.innerHTML = `
+                    <td class="p-1 border">
+                        <select id="course-${i}" onchange="saveData()" class="w-full p-2 rounded border border-gray-300 text-sm focus:ring-2 focus:ring-blue-400">
+                            ${courseOptions}
+                        </select>
+                    </td>
+                    <td class="p-1 border">
+                        <select id="race-${i}" onchange="updateOptions(${i}); calculate(${i}); saveData();" class="w-full p-2 rounded border border-gray-300 font-bold">
+                            ${raceOptions}
+                        </select>
+                    </td>
+                    <td class="p-1 border">${createCountSelect(i, 'inner')}</td>
+                    <td class="p-1 border">${createCountSelect(i, 'outer')}</td>
+                    <td class="p-1 border">${createCountSelect(i, 'front')}</td>
+                    <td class="p-1 border">${createCountSelect(i, 'back')}</td>
+                `;
+                tbody.appendChild(tr);
+            }
+            loadData();
+        }
+
+        function createCountSelect(rowIdx, type) {
+            let options = '';
+            for(let n=0; n<=36; n++) options += `<option value="${n}">${n}</option>`;
+            return `<select id="${type}-${rowIdx}" onfocus="updateOptions(${rowIdx})" onchange="calculate(${rowIdx}); saveData();" class="w-full p-2 rounded status-default text-center">
+                        ${options}
+                    </select>`;
+        }
+
+        function updateOptions(rowIdx) {
+            const raceEl = document.getElementById(`race-${rowIdx}`);
+            const currentRace = parseInt(raceEl.value);
+            
+            Array.from(raceEl.options).forEach(opt => {
+                const val = parseInt(opt.value);
+                opt.disabled = (val !== 0 && val < currentRace);
+            });
+
+            const types = ['inner', 'outer', 'front', 'back'];
+            types.forEach(type => {
+                const el = document.getElementById(`${type}-${rowIdx}`);
+                const currentVal = parseInt(el.value);
+                Array.from(el.options).forEach(opt => {
+                    const val = parseInt(opt.value);
+                    opt.disabled = (val !== 0 && val < currentVal);
+                });
+            });
+        }
+
+        function calculate(rowIdx) {
+            const raceCount = parseInt(document.getElementById(`race-${rowIdx}`).value);
+            
+            const vals = {
+                inner: parseInt(document.getElementById(`inner-${rowIdx}`).value),
+                outer: parseInt(document.getElementById(`outer-${rowIdx}`).value),
+                front: parseInt(document.getElementById(`front-${rowIdx}`).value),
+                back: parseInt(document.getElementById(`back-${rowIdx}`).value)
+            };
+
+            const types = ['inner', 'outer', 'front', 'back'];
+            
+            types.forEach(type => {
+                const element = document.getElementById(`${type}-${rowIdx}`);
+                const value = vals[type];
+                
+                element.className = "w-full p-2 rounded text-center ";
+                
+                if (value > 0) {
+                    element.classList.add('has-value');
+                } else {
+                    element.classList.add('status-default');
+                }
+
+                if (raceCount === 0) return;
+
+                const score = (value / (raceCount * 2)) * 100;
+                let diff = 0;
+                if (type === 'inner') diff = Math.abs(vals.inner - vals.outer);
+                if (type === 'outer') diff = Math.abs(vals.outer - vals.inner);
+                if (type === 'front') diff = Math.abs(vals.front - vals.back);
+                if (type === 'back') diff = Math.abs(vals.back - vals.front);
+
+                if (diff <= 1) return;
+
+                if (type === 'inner' || type === 'outer') {
+                    if (raceCount <= 4) {
+                        if (score >= 100) { element.className = "w-full p-2 rounded text-center status-red"; }
+                        else if (score >= 90) { element.className = "w-full p-2 rounded text-center status-blue"; }
+                        else if (score >= 80) { element.className = "w-full p-2 rounded text-center status-yellow"; }
+                    } else {
+                        if (score >= 95) { element.className = "w-full p-2 rounded text-center status-red"; }
+                        else if (score >= 85) { element.className = "w-full p-2 rounded text-center status-blue"; }
+                        else if (score >= 75) { element.className = "w-full p-2 rounded text-center status-yellow"; }
+                    }
+                } else {
+                    if (raceCount <= 4) {
+                        if (score >= 120) { element.className = "w-full p-2 rounded text-center status-red"; }
+                        else if (score >= 110) { element.className = "w-full p-2 rounded text-center status-blue"; }
+                        else if (score >= 100) { element.className = "w-full p-2 rounded text-center status-yellow"; }
+                    } else {
+                        if (score >= 110) { element.className = "w-full p-2 rounded text-center status-red"; }
+                        else if (score >= 100) { element.className = "w-full p-2 rounded text-center status-blue"; }
+                        else if (score >= 90) { element.className = "w-full p-2 rounded text-center status-yellow"; }
+                    }
+                }
+            });
+        }
+
+        function saveData() {
+            const data = [];
+            for (let i = 0; i < rowsCount; i++) {
+                data.push({
+                    course: document.getElementById(`course-${i}`).value,
+                    race: document.getElementById(`race-${i}`).value,
+                    inner: document.getElementById(`inner-${i}`).value,
+                    outer: document.getElementById(`outer-${i}`).value,
+                    front: document.getElementById(`front-${i}`).value,
+                    back: document.getElementById(`back-${i}`).value
+                });
+            }
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+        }
+
+        function loadData() {
+            const saved = localStorage.getItem(STORAGE_KEY);
+            if (!saved) return;
+            const data = JSON.parse(saved);
+            data.forEach((row, i) => {
+                if (i >= rowsCount) return;
+                document.getElementById(`course-${i}`).value = row.course;
+                document.getElementById(`race-${i}`).value = row.race;
+                document.getElementById(`inner-${i}`).value = row.inner;
+                document.getElementById(`outer-${i}`).value = row.outer;
+                document.getElementById(`front-${i}`).value = row.front;
+                document.getElementById(`back-${i}`).value = row.back;
+                
+                updateOptions(i);
+                calculate(i);
+            });
+        }
+
+        function resetNumbersOnly() {
+            for (let i = 0; i < rowsCount; i++) {
+                const raceEl = document.getElementById(`race-${i}`);
+                raceEl.value = "0";
+                Array.from(raceEl.options).forEach(opt => opt.disabled = false);
+
+                const types = ['inner', 'outer', 'front', 'back'];
+                types.forEach(type => {
+                    const el = document.getElementById(`${type}-${i}`);
+                    el.value = "0";
+                    el.className = "w-full p-2 rounded status-default text-center";
+                    Array.from(el.options).forEach(opt => opt.disabled = false);
+                });
+            }
+            saveData();
+        }
+
+        window.onload = initTable;
+    </script>
+</body>
+</html>
